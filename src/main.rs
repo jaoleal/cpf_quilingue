@@ -11,6 +11,7 @@ enum EstadoApp {
 struct Resultado {
     cpf_formatado: String,
     num_diferencas: usize,
+    pontuacao_proximidade: usize,
 }
 
 struct Aplicativo {
@@ -53,12 +54,9 @@ impl Aplicativo {
             let tamanho = [logo_image.width() as usize, logo_image.height() as usize];
             let pixels = logo_image.to_rgba8();
             let cor_image = egui::ColorImage::from_rgba_unmultiplied(tamanho, pixels.as_raw());
-            
-            self.logo_texture = Some(ctx.load_texture(
-                "logo",
-                cor_image,
-                egui::TextureOptions::LINEAR,
-            ));
+
+            self.logo_texture =
+                Some(ctx.load_texture("logo", cor_image, egui::TextureOptions::LINEAR));
         }
     }
 
@@ -92,16 +90,24 @@ impl Aplicativo {
 
     fn buscar_variacoes(&mut self, cpf: String) {
         let digitos_cpf: Vec<char> = cpf.chars().collect();
-        
+
         // Tentar variações com 1, 2 e 3 dígitos alterados
         for num_mudancas in 1..=3 {
-            self.progresso_busca = format!("Buscando variações com {} dígito(s) alterado(s)...", num_mudancas);
-            
+            self.progresso_busca = format!(
+                "Buscando variações com {} dígito(s) alterado(s)...",
+                num_mudancas
+            );
+
             if self.encontrar_variacoes(&digitos_cpf, num_mudancas) {
-                // Se encontrou alguma variação com esse número de mudanças, parar
                 break;
             }
         }
+
+        self.resultados
+            .sort_by(|a, b| match a.num_diferencas.cmp(&b.num_diferencas) {
+                std::cmp::Ordering::Equal => a.pontuacao_proximidade.cmp(&b.pontuacao_proximidade),
+                other => other,
+            });
 
         self.estado = EstadoApp::Concluido;
         if self.resultados.is_empty() {
@@ -121,7 +127,7 @@ impl Aplicativo {
     fn encontrar_variacoes(&mut self, digitos_cpf: &[char], num_mudancas: usize) -> bool {
         let posicoes: Vec<usize> = (0..11).collect();
         let combinacoes = gerar_combinacoes(&posicoes, num_mudancas);
-        
+
         let mut encontrado = false;
         for indices in combinacoes {
             self.tentar_combinacoes_digitos(digitos_cpf, &indices, &mut encontrado);
@@ -139,41 +145,44 @@ impl Aplicativo {
         // Gerar todas as combinações possíveis de dígitos para as posições especificadas
         let num_posicoes = posicoes.len();
         let total_combinacoes = 9_usize.pow(num_posicoes as u32);
-        
+
         for i in 0..total_combinacoes {
             let mut candidato = digitos_cpf.to_vec();
             let mut temporario = i;
-            
+
             // Converter o índice em uma combinação de dígitos
             for &posicao in posicoes.iter() {
                 let digito_original = digitos_cpf[posicao].to_digit(10).unwrap() as usize;
                 let deslocamento = temporario % 9;
                 temporario /= 9;
-                
+
                 // Calcular o novo dígito (pulando o dígito original)
                 let novo_digito = if deslocamento < digito_original {
                     deslocamento
                 } else {
                     deslocamento + 1
                 };
-                
+
                 candidato[posicao] = char::from_digit(novo_digito as u32, 10).unwrap();
             }
-            
+
             self.total_verificados += 1;
             let candidato_str: String = candidato.iter().collect();
-            
+
             if cpf::valid(&candidato_str) {
                 let formatado = formatar_cpf(&candidato_str);
-                
+
                 // Verificar se já existe este resultado
                 let ja_existe = self.resultados.iter().any(|r| r.cpf_formatado == formatado);
-                
+
                 if !ja_existe {
                     let num_diferencas = contar_diferencas(&self.cpf_original, &candidato_str);
+                    let pontuacao =
+                        calcular_pontuacao_proximidade(&self.cpf_original, &candidato_str);
                     self.resultados.push(Resultado {
                         cpf_formatado: formatado,
                         num_diferencas,
+                        pontuacao_proximidade: pontuacao,
                     });
                     *encontrado = true;
                 }
@@ -434,6 +443,38 @@ fn contar_diferencas(cpf1: &str, cpf2: &str) -> usize {
         .zip(cpf2.chars())
         .filter(|(c1, c2)| c1 != c2)
         .count()
+}
+
+fn distancia_digito(d1: char, d2: char) -> usize {
+    if d1 == d2 {
+        return 0;
+    }
+
+    let posicao = |c: char| -> usize {
+        match c {
+            '1' => 0,
+            '2' => 1,
+            '3' => 2,
+            '4' => 3,
+            '5' => 4,
+            '6' => 5,
+            '7' => 6,
+            '8' => 7,
+            '9' => 8,
+            '0' => 9,
+            _ => 0,
+        }
+    };
+
+    posicao(d1).abs_diff(posicao(d2))
+}
+
+fn calcular_pontuacao_proximidade(original: &str, candidato: &str) -> usize {
+    original
+        .chars()
+        .zip(candidato.chars())
+        .map(|(d1, d2)| distancia_digito(d1, d2))
+        .sum()
 }
 
 fn formatar_cpf(cpf: &str) -> String {
